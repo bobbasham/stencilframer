@@ -1,0 +1,52 @@
+# Stencilframer
+
+A script which will take the KiCAD PCB file (Gerber support should come at some point) and, using OpenSCAD, generate the 3D model of a fixture able to hold the stencil and the PCB in place (for applying the solder paste). It can also generate a frame to hold the stencil in place.
+
+Only dependencies are OpenSCAD and Python.
+
+It can generate STL or AMF file for slicing, PNG image or directly output the OpenSCAD code for further editing.
+
+
+## Usage
+
+Run the script with `-h` or `--help` to see the usage options.
+
+```
+> ./stencilframer.py --help
+usage: stencilframer.py [-h] [-l MARGIN_LEFT] [-r MARGIN_RIGHT] [-t MARGIN_TOP] [-b MARGIN_BOTTOM] [-m] [-p PCB_THICKNESS] [-s SHAPE] [-f] [-o OFFSET] [--openscad OPENSCAD]
+                        infile outfile
+
+positional arguments:
+  infile                path to KiCad PCB file
+  outfile               path to output file (extension can be .stl, .amf, .png, .pdf, .scad)
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -l MARGIN_LEFT, --margin-left MARGIN_LEFT
+                        Left margin (mm) (default: 20)
+  -r MARGIN_RIGHT, --margin-right MARGIN_RIGHT
+                        Right margin (mm) (default: 20)
+  -t MARGIN_TOP, --margin-top MARGIN_TOP
+                        Top margin (mm) (default: 20)
+  -b MARGIN_BOTTOM, --margin-bottom MARGIN_BOTTOM
+                        Bottom margin (mm) (default: 20)
+  -m, --mirror          Mirror the PCB (to get the bottom side up) (default: False)
+  -p PCB_THICKNESS, --pcb-thickness PCB_THICKNESS
+                        Thickness of the PCB (mm) (default: 1.6)
+  -s SHAPE, --shape SHAPE
+                        Index of the desired shape from KiCAD file (default: 0)
+  -f, --frame           Generate stencil holding frame instead of stencil frame (default: False)
+  -o OFFSET, --offset OFFSET
+                        Offset between the PCB/stencil and frame edge (mm) (default: 0.1)
+  --openscad OPENSCAD   Path to OpenSCAD executable (default: openscad)
+
+```
+
+## Example usage
+
+```
+> ./stencilframer.py --pcb-thickness 1.55 path_to_pcb_file.kicad_pcb holder.stl
+> ./stencilframer.py --frame path_to_pcb_file.kicad_pcb frame.stl
+```
+
+TODO: add some nice pictures
