@@ -1,17 +1,32 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# The MIT License (MIT)
+#
+# Copyright © 2021 Igor Brkic <i@hglt.ch>
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of
+# this software and associated documentation files (the “Software”), to deal in
+# the Software without restriction, including without limitation the rights to use,
+# copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+# Software, and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import argparse
 import math
 import os
 import re
 import sys
-
-
-def parse_kicad_element(el):
-    parts = el.strip("()").split(' ')
-    if parts[0] in ('start', 'end'):
-        return parts[0], tuple((float(pp) for pp in parts[1:]))
-    return parts[0]
 
 
 def rotate_point(point, center, angle_deg):
@@ -26,6 +41,18 @@ def rotate_point(point, center, angle_deg):
 
     # translate back
     return (sr[0]+center[0], sr[1]+center[1])
+
+
+def distance(p1, p2):
+    # euclidean distance
+    return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
+
+
+def parse_kicad_element(el):
+    parts = el.strip("()").split(' ')
+    if parts[0] in ('start', 'end'):
+        return parts[0], tuple((float(pp) for pp in parts[1:]))
+    return parts[0]
 
 
 def process_kicad_layer(outline, arc_subdivision=1):
@@ -61,9 +88,6 @@ def process_kicad_layer(outline, arc_subdivision=1):
 
     return paths
 
-
-def distance(p1, p2):
-    return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
 
 def sort_paths(paths):
     current = paths[0]
@@ -102,25 +126,22 @@ def main():
     extensions = ('.stl', '.amf', '.png', '.pdf', '.scad')
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('-s', '--shape', help="Index of the desired shape from KiCAD file", type=int, default=0)
-
+    # stencil margins
     parser.add_argument('-l', '--margin-left', help="Left margin (mm)", type=float, default=20)
     parser.add_argument('-r', '--margin-right', help="Right margin (mm)", type=float, default=20)
     parser.add_argument('-t', '--margin-top', help="Top margin (mm)", type=float, default=20)
     parser.add_argument('-b', '--margin-bottom', help="Bottom margin (mm)", type=float, default=20)
 
+    # pcb properties
     parser.add_argument('-m', '--mirror', help="Mirror the PCB (to get the bottom side up)", action='store_true')
-
-
-    # TODO: print frame holder
-    #parser.add_argument('-m', '--mirror', help="Mirror the PCB (to get the bottom side up)", action='store_true')
-
     parser.add_argument('-p', '--pcb-thickness', help="Thickness of the PCB (mm)", type=float, default=1.6)
+    parser.add_argument('-s', '--shape', help="Index of the desired shape from KiCAD file", type=int, default=0)
 
+    # 3D model specifics
+    parser.add_argument('-f', '--frame', help="Generate stencil holding frame instead of stencil frame", action='store_true')
     parser.add_argument('-o', '--offset', help="Offset between the PCB/stencil and frame edge (mm)", type=float, default=0.1)
 
-    parser.add_argument('-f', '--format', help="Output format", type=str, choices=('stl', 'amf', 'png', 'scad'), default="stl")
-
+    parser.add_argument('--openscad', help="Path to OpenSCAD executable", type=str, default="openscad")
     parser.add_argument('infile', help="path to KiCad PCB file")
     parser.add_argument('outfile', help="path to output file (extension can be %s)"%(", ".join(extensions),))
 
@@ -130,6 +151,10 @@ def main():
 
     if not any([args.outfile.endswith(ext) for ext in extensions]):
         print("unsupported output file extension")
+        return 1
+
+    if os.system(args.openscad+" -v")!=0:
+        print("OpenSCAD executable not found on the system.")
         return 1
 
     try:
@@ -203,31 +228,68 @@ def main():
             (bounds['xmax']+args.margin_right+base_margin, bounds['ymin']-args.margin_top-base_margin)
             ]
 
-    pcb_cutout = "linear_extrude(height=10) offset(r={offset}) polygon(points={points}, convexity=10);".format(points=str([list(p) for p in pol]), offset=args.offset)
+    # OpenSCAD code generation start
 
-    stencil_cutout = "translate([0, 0, {thick}]) linear_extrude(height=5) offset(r={offset}) polygon(points={points});".format(points=str([list(p) for p in pol_stencil]), offset=args.offset, thick=args.pcb_thickness)
+    code = ""
 
-    base = "translate([0, 0, {vert}]) linear_extrude(height={height}) polygon(points={points});".format(points=str([list(p) for p in pol_base]), height=3+args.pcb_thickness, vert=-1)
+    if args.frame:
+        # generate just the frame to hold the stencil in place
+        stencil_bounds = {
+                'xmin': min([p[0] for p in pol_stencil]),
+                'xmax': max([p[0] for p in pol_stencil]),
+                'ymin': min([p[1] for p in pol_stencil]),
+                'ymax': max([p[1] for p in pol_stencil]),
+                }
+        # add chamfer to frame
+        chamf = min([(stencil_bounds['xmax']-stencil_bounds['xmin'])/5, (stencil_bounds['ymax']-stencil_bounds['ymin'])/5, 15])
+        pol_frame_out = [
+            (stencil_bounds['xmin']+chamf, stencil_bounds['ymin']),
+            (stencil_bounds['xmax']-chamf, stencil_bounds['ymin']),
 
-    # add hole on the longest side of the PCB for easier PCB extraction
-    # FIXME: probably needs another hole or two
-    maxlen = 0
-    maxidx = -1
-    for i in range(len(pol)):
-        dd = distance(pol[i], pol[(i-1)%len(pol)])
-        if dd>maxlen:
-            maxidx = i
-            maxlen = dd
-    d = min(maxlen/2, 10)
-    holes = "translate([{x}, {y}, 0]) cylinder(h=20, r={r}, center=true, $fn=100);".format(x=(pol[maxidx][0]+pol[(maxidx-1)%len(pol)][0])/2, y=(pol[maxidx][1]+pol[(maxidx-1)%len(pol)][1])/2, r=d/2)
+            (stencil_bounds['xmax'], stencil_bounds['ymin']+chamf),
+            (stencil_bounds['xmax'], stencil_bounds['ymax']-chamf),
 
-    # add holes for the stencil removal
-    for i in range(4):
-        holes += "translate([{x}, {y}, 0]) cylinder(h=20, r={r}, center=true, $fn=100);".format(x=(pol_base[i][0]+pol_base[(i-1)%len(pol_base)][0])/2, y=(pol_base[i][1]+pol_base[(i-1)%len(pol_base)][1])/2, r=8+base_margin)
+            (stencil_bounds['xmax']-chamf, stencil_bounds['ymax']),
+            (stencil_bounds['xmin']+chamf, stencil_bounds['ymax']),
 
+            (stencil_bounds['xmin'], stencil_bounds['ymax']-chamf),
+            (stencil_bounds['xmin'], stencil_bounds['ymin']+chamf),
+            ]
 
-    code = "difference(){{ \n{base} union(){{ {pcb} {stenc} {holes} }} }}".format(base=base, pcb=pcb_cutout, stenc=stencil_cutout, holes=holes)
+        frame_out = "linear_extrude(height=5) offset(r={offset}) polygon(points={points}, convexity=10);".format(points=str([list(p) for p in pol_frame_out]), offset=0.02)
+        frame_in = "translate([0, 0, -2]) linear_extrude(height=10) offset(r={offset}) polygon(points={points}, convexity=10);".format(points=str([list(p) for p in pol_frame_out]), offset=-5)
 
+        code="difference(){{ {fout} {fin} }}".format(fout=frame_out, fin=frame_in)
+
+    else:
+        # generate the actual stencil frame
+
+        # arrange cutouts for PCB and stencil
+        pcb_cutout = "linear_extrude(height=10) offset(r={offset}) polygon(points={points}, convexity=10);".format(points=str([list(p) for p in pol]), offset=args.offset)
+
+        stencil_cutout = "translate([0, 0, {thick}]) linear_extrude(height=5) offset(r={offset}) polygon(points={points});".format(points=str([list(p) for p in pol_stencil]), offset=args.offset, thick=args.pcb_thickness)
+
+        base = "translate([0, 0, {vert}]) linear_extrude(height={height}) polygon(points={points});".format(points=str([list(p) for p in pol_base]), height=3+args.pcb_thickness, vert=-1)
+
+        # add hole on the longest side of the PCB for easier PCB extraction
+        # FIXME: probably needs another hole or two and better placement
+        maxlen = 0
+        maxidx = -1
+        for i in range(len(pol)):
+            dd = distance(pol[i], pol[(i-1)%len(pol)])
+            if dd>maxlen:
+                maxidx = i
+                maxlen = dd
+        d = min(maxlen/2, 10)
+        holes = "translate([{x}, {y}, 0]) cylinder(h=20, r={r}, center=true, $fn=100);".format(x=(pol[maxidx][0]+pol[(maxidx-1)%len(pol)][0])/2, y=(pol[maxidx][1]+pol[(maxidx-1)%len(pol)][1])/2, r=d/2)
+
+        # add holes for the stencil removal
+        for i in range(4):
+            holes += "translate([{x}, {y}, 0]) cylinder(h=20, r={r}, center=true, $fn=100);".format(x=(pol_base[i][0]+pol_base[(i-1)%len(pol_base)][0])/2, y=(pol_base[i][1]+pol_base[(i-1)%len(pol_base)][1])/2, r=7+base_margin)
+
+        code = "difference(){{ \n{base} union(){{ {pcb} {stenc} {holes} }} }}".format(base=base, pcb=pcb_cutout, stenc=stencil_cutout, holes=holes)
+
+    # produce the output file
     if args.outfile.endswith(".scad"):
         with open(args.outfile, "w") as f:
             f.write(code)
