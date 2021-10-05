@@ -6,6 +6,10 @@ Only dependencies are OpenSCAD and Python.
 
 It can generate STL or AMF file for slicing, PNG image or directly output the OpenSCAD code for further editing.
 
+More info at [https://hyperglitch.com/articles/stencilframer](https://hyperglitch.com/articles/stencilframer)
+
+![Fixture holding the PCB and stencil](https://hyperglitch.com/public/images/stencilframer/stencilframer4.jpg)
+
 
 ## Usage
 
@@ -13,7 +17,8 @@ Run the script with `-h` or `--help` to see the usage options.
 
 ```
 > ./stencilframer.py --help
-usage: stencilframer.py [-h] [-l MARGIN_LEFT] [-r MARGIN_RIGHT] [-t MARGIN_TOP] [-b MARGIN_BOTTOM] [-m] [-p PCB_THICKNESS] [-s SHAPE] [-f] [-o OFFSET] [--openscad OPENSCAD]
+usage: stencilframer.py [-h] [-l MARGIN_LEFT] [-r MARGIN_RIGHT] [-t MARGIN_TOP] [-b MARGIN_BOTTOM] [-m] [-p PCB_THICKNESS] [-s SHAPE] [-f] [-k] [-o OFFSET]
+                        [--stencil-offset STENCIL_OFFSET] [--openscad OPENSCAD]
                         infile outfile
 
 positional arguments:
@@ -36,10 +41,12 @@ optional arguments:
   -s SHAPE, --shape SHAPE
                         Index of the desired shape from KiCAD file (default: 0)
   -f, --frame           Generate stencil holding frame instead of stencil frame (default: False)
+  -k, --skip-holes      Don't add holes for easy removal in the fixture (default: False)
   -o OFFSET, --offset OFFSET
                         Offset between the PCB/stencil and frame edge (mm) (default: 0.1)
+  --stencil-offset STENCIL_OFFSET
+                        Offset between the stencil and frame edge (mm). If not specified, the --offset is used (default: None)
   --openscad OPENSCAD   Path to OpenSCAD executable (default: openscad)
-
 ```
 
 ## Example usage
@@ -49,4 +56,9 @@ optional arguments:
 > ./stencilframer.py --frame path_to_pcb_file.kicad_pcb frame.stl
 ```
 
-TODO: add some nice pictures
+## TODO
+
+- add Gerber support
+- ...
+
+
