@@ -139,7 +139,9 @@ def main():
 
     # 3D model specifics
     parser.add_argument('-f', '--frame', help="Generate stencil holding frame instead of stencil frame", action='store_true')
+    parser.add_argument('-k', '--skip-holes', help="Don't add holes for easy removal in the fixture", action='store_true')
     parser.add_argument('-o', '--offset', help="Offset between the PCB/stencil and frame edge (mm)", type=float, default=0.1)
+    parser.add_argument('--stencil-offset', help="Offset between the stencil and frame edge (mm). If not specified, the --offset is used", type=float, default=None)
 
     parser.add_argument('--openscad', help="Path to OpenSCAD executable", type=str, default="openscad")
     parser.add_argument('infile', help="path to KiCad PCB file")
@@ -156,6 +158,9 @@ def main():
     if os.system(args.openscad+" -v")!=0:
         print("OpenSCAD executable not found on the system.")
         return 1
+
+    if args.stencil_offset is None:
+        args.stencil_offset = args.offset
 
     try:
         # kicad file
@@ -200,7 +205,9 @@ def main():
         print("no shape found on Edge.Cuts layer")
         return 1
 
-    if args.mirror:
+    # since the KiCAD and OpenSCAD use different y-axis direction, the polygon is mirrored
+    # by default
+    if not args.mirror:
         # mirror around y axis
         pol = [(-p[0], p[1]) for p in pol]
 
@@ -256,7 +263,7 @@ def main():
             (stencil_bounds['xmin'], stencil_bounds['ymin']+chamf),
             ]
 
-        frame_out = "linear_extrude(height=5) offset(r={offset}) polygon(points={points}, convexity=10);".format(points=str([list(p) for p in pol_frame_out]), offset=0.02)
+        frame_out = "linear_extrude(height=5) offset(r={offset}) polygon(points={points}, convexity=10);".format(points=str([list(p) for p in pol_frame_out]), offset=args.stencil_offset)
         frame_in = "translate([0, 0, -2]) linear_extrude(height=10) offset(r={offset}) polygon(points={points}, convexity=10);".format(points=str([list(p) for p in pol_frame_out]), offset=-5)
 
         code="difference(){{ {fout} {fin} }}".format(fout=frame_out, fin=frame_in)
@@ -267,25 +274,27 @@ def main():
         # arrange cutouts for PCB and stencil
         pcb_cutout = "linear_extrude(height=10) offset(r={offset}) polygon(points={points}, convexity=10);".format(points=str([list(p) for p in pol]), offset=args.offset)
 
-        stencil_cutout = "translate([0, 0, {thick}]) linear_extrude(height=5) offset(r={offset}) polygon(points={points});".format(points=str([list(p) for p in pol_stencil]), offset=args.offset, thick=args.pcb_thickness)
+        stencil_cutout = "translate([0, 0, {thick}]) linear_extrude(height=5) offset(r={offset}) polygon(points={points});".format(points=str([list(p) for p in pol_stencil]), offset=args.stencil_offset, thick=args.pcb_thickness)
 
         base = "translate([0, 0, {vert}]) linear_extrude(height={height}) polygon(points={points});".format(points=str([list(p) for p in pol_base]), height=3+args.pcb_thickness, vert=-1)
 
-        # add hole on the longest side of the PCB for easier PCB extraction
-        # FIXME: probably needs another hole or two and better placement
-        maxlen = 0
-        maxidx = -1
-        for i in range(len(pol)):
-            dd = distance(pol[i], pol[(i-1)%len(pol)])
-            if dd>maxlen:
-                maxidx = i
-                maxlen = dd
-        d = min(maxlen/2, 10)
-        holes = "translate([{x}, {y}, 0]) cylinder(h=20, r={r}, center=true, $fn=100);".format(x=(pol[maxidx][0]+pol[(maxidx-1)%len(pol)][0])/2, y=(pol[maxidx][1]+pol[(maxidx-1)%len(pol)][1])/2, r=d/2)
+        holes = ""
+        if not args.skip_holes:
+            # add hole on the longest side of the PCB for easier PCB extraction
+            # FIXME: probably needs another hole or two and better placement
+            maxlen = 0
+            maxidx = -1
+            for i in range(len(pol)):
+                dd = distance(pol[i], pol[(i-1)%len(pol)])
+                if dd>maxlen:
+                    maxidx = i
+                    maxlen = dd
+            d = min(maxlen/2, 10)
+            holes = "translate([{x}, {y}, 0]) cylinder(h=20, r={r}, center=true, $fn=100);".format(x=(pol[maxidx][0]+pol[(maxidx-1)%len(pol)][0])/2, y=(pol[maxidx][1]+pol[(maxidx-1)%len(pol)][1])/2, r=d/2)
 
-        # add holes for the stencil removal
-        for i in range(4):
-            holes += "translate([{x}, {y}, 0]) cylinder(h=20, r={r}, center=true, $fn=100);".format(x=(pol_base[i][0]+pol_base[(i-1)%len(pol_base)][0])/2, y=(pol_base[i][1]+pol_base[(i-1)%len(pol_base)][1])/2, r=7+base_margin)
+            # add holes for the stencil removal
+            for i in range(4):
+                holes += "translate([{x}, {y}, 0]) cylinder(h=20, r={r}, center=true, $fn=100);".format(x=(pol_base[i][0]+pol_base[(i-1)%len(pol_base)][0])/2, y=(pol_base[i][1]+pol_base[(i-1)%len(pol_base)][1])/2, r=7+base_margin)
 
         code = "difference(){{ \n{base} union(){{ {pcb} {stenc} {holes} }} }}".format(base=base, pcb=pcb_cutout, stenc=stencil_cutout, holes=holes)
 
