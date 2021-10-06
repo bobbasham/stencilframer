@@ -1,6 +1,6 @@
 # Stencilframer
 
-A script which will take the KiCAD PCB file (Gerber support should come at some point) and, using OpenSCAD, generate the 3D model of a fixture able to hold the stencil and the PCB in place (for applying the solder paste). It can also generate a frame to hold the stencil in place.
+A script which will take the KiCAD PCB  or Gerber file and, using OpenSCAD, generate the 3D model of a fixture able to hold the stencil and the PCB in place (for applying the solder paste). It can also generate a frame to hold the stencil in place.
 
 Only dependencies are OpenSCAD and Python.
 
@@ -17,12 +17,12 @@ Run the script with `-h` or `--help` to see the usage options.
 
 ```
 > ./stencilframer.py --help
-usage: stencilframer.py [-h] [-l MARGIN_LEFT] [-r MARGIN_RIGHT] [-t MARGIN_TOP] [-b MARGIN_BOTTOM] [-m] [-p PCB_THICKNESS] [-s SHAPE] [-f] [-k] [-o OFFSET]
-                        [--stencil-offset STENCIL_OFFSET] [--openscad OPENSCAD]
+usage: stencilframer.py [-h] [-l MARGIN_LEFT] [-r MARGIN_RIGHT] [-t MARGIN_TOP] [-b MARGIN_BOTTOM] [-m] [-p PCB_THICKNESS] [-s SHAPE]
+                        [-f] [-k] [-o OFFSET] [--stencil-offset STENCIL_OFFSET] [--openscad OPENSCAD]
                         infile outfile
 
 positional arguments:
-  infile                path to KiCad PCB file
+  infile                path to KiCad PCB or gerber file (.kicad_pcb, .gbr, .gm1)
   outfile               path to output file (extension can be .stl, .amf, .png, .pdf, .scad)
 
 optional arguments:
@@ -39,7 +39,7 @@ optional arguments:
   -p PCB_THICKNESS, --pcb-thickness PCB_THICKNESS
                         Thickness of the PCB (mm) (default: 1.6)
   -s SHAPE, --shape SHAPE
-                        Index of the desired shape from KiCAD file (default: 0)
+                        Index of the desired shape from input file (default: 0)
   -f, --frame           Generate stencil holding frame instead of stencil frame (default: False)
   -k, --skip-holes      Don't add holes for easy removal in the fixture (default: False)
   -o OFFSET, --offset OFFSET
@@ -55,10 +55,4 @@ optional arguments:
 > ./stencilframer.py --pcb-thickness 1.55 path_to_pcb_file.kicad_pcb holder.stl
 > ./stencilframer.py --frame path_to_pcb_file.kicad_pcb frame.stl
 ```
-
-## TODO
-
-- add Gerber support
-- ...
-
 

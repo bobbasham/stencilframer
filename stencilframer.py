@@ -23,10 +23,21 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 import argparse
+import enum
 import math
 import os
 import re
 import sys
+
+
+class InFormat(enum.Enum):
+    KICAD = 0
+    GERBER = 1
+
+class Interpolation(enum.Enum):
+    LINEAR = 0
+    ARC_CW = 1
+    ARC_CCW = 2
 
 
 def rotate_point(point, center, angle_deg):
@@ -62,6 +73,10 @@ def process_kicad_layer(outline, arc_subdivision=1):
     #   (gr_arc (start 208.75 46) (end 212.25 46) (angle -90) (layer Edge.Cuts) (width 0.05) (tstamp 61516B4C))
     paths = []
     for ln in outline:
+        if "(layer Edge.Cuts)" not in ln:
+            # extract only the Edge.Cuts layer
+            continue
+
         p = {
                 'type': ln.strip("()").split(' ')[0].split('_')[-1]
                 }
@@ -77,14 +92,142 @@ def process_kicad_layer(outline, arc_subdivision=1):
                 p[el_p[0]] = float(el_p[1])
 
         if p['type']=='arc':
+            # FIXME: revisit arc orientation
             # on arc, the 'start' is the center point and 'end' is starting point
             # transform data
 
             # do the rotation
             p['center'] = p['start']
             p['start'] = rotate_point(point=p['end'], center=p['start'], angle_deg=-p['angle']) # angle has wrong orientation
+            print("interpolating arc from %s to %s"%(p['start'], p['end']))
+        else:
+            print("interpolating line from %s to %s"%(p['start'], p['end']))
 
         paths.append(p)
+
+    return paths
+
+
+def process_gerber_layer(outline, arc_subdivision=1):
+    apertures = {}
+    integers = 4
+    decimals = 6
+    unit_convert = 1
+    total_coord = 6
+    interpolation = Interpolation.LINEAR
+    point = (0,0)
+
+    paths = []
+
+    # convert raw coordinate to float in mm
+    coord = lambda x: float(x)/(10**decimals)/unit_convert
+    get_angle = lambda s, e, c: math.asin(  distance(s, e)/2 / distance(s, c)  ) * 2 / math.pi * 180
+
+    for ln in outline:
+        if ln.startswith('%FSLA'):
+            # parse decimal format
+            try:
+                fmts = re.findall(r'FSLAX([0-9]+)Y([0-9]+)', ln)[0]
+            except IndexError:
+                raise ValueError("Invalid coordinate format specified")
+            if len(fmts)!=2 or fmts[0]!=fmts[1]:
+                raise ValueError("Invalid coordinate format specified")
+            integers = int(fmts[0][0])
+            decimals = int(fmts[0][1:])
+            print("coordinate format set to %d.%d"%(decimals, total_coord,))
+
+        elif ln.startswith('%MOIN'):
+            # units in inches - convert to mm
+            unit_convert = 25.4
+            print("units set to inches")
+
+        elif ln.startswith('%MOMM'):
+            # units in inches - convert to mm
+            unit_convert = 1
+            print("units set to mm")
+
+        elif ln.startswith('%ADD'):
+            # apertures list
+            # since we're only looking for outline we can assume 0.05mm
+            # aperture size and skip this for now
+            continue
+
+        elif ln.startswith('G01*'):
+            interpolation = Interpolation.LINEAR
+
+        elif ln.startswith('G02*'):
+            interpolation = Interpolation.ARC_CW
+
+        elif ln.startswith('G03*'):
+            interpolation = Interpolation.ARC_CCW
+
+        elif ln.startswith('D'):
+            # select apperture from the list
+            continue
+
+        elif ln.startswith('X'):
+            # move or interpolate command
+            x = None
+            y = None
+            i = None
+            j = None
+            try:
+                pts = re.findall(r'X([0-9\-]+)Y([0-9\-]+)I([0-9\-]+)J([0-9\-]+)', ln)[0]
+                i = coord(pts[2])
+                j = coord(pts[3])
+            except IndexError:
+                try:
+                    pts = re.findall(r'X([0-9\-]+)Y([0-9\-]+)', ln)[0]
+                except IndexError:
+                    raise ValueError("Invalid move or interpolate command %s"%(ln,))
+
+            x = coord(pts[0])
+            y = coord(pts[1])
+
+            center = None
+            if i is not None:
+                center = (point[0]+i, point[1]+j)
+
+            if ln.endswith('D02*'):
+                # move command
+                point = (x, y)
+
+            elif ln.endswith('D01*'):
+                # interpolate command
+                pend = (x, y)
+                if interpolation==Interpolation.LINEAR:
+                    print("interpolating line from %s to %s"%(point, pend,))
+                    paths.append({
+                        'type': 'line',
+                        'start': point,
+                        'end': pend
+                        })
+                elif interpolation==Interpolation.ARC_CW:
+                    print("interpolating CW arc from %s to %s"%(point, pend,))
+                    paths.append({
+                        'type': 'arc',
+                        'start': pend,
+                        'end': point,
+                        'center': center,
+                        'angle': get_angle(point, pend, center)
+                        })
+                elif interpolation==Interpolation.ARC_CCW:
+                    print("interpolating CCW arc from %s to %s"%(point, pend,))
+                    paths.append({
+                        'type': 'arc',
+                        'start': point,
+                        'end': pend,
+                        'center': center,
+                        'angle': get_angle(point, pend, center)
+                        })
+                point = pend
+
+            else:
+                raise ValueError("currently only supported commands are move or interpolate")
+
+        elif ln.startswith('M02*'):
+            # end of file
+            break
 
     return paths
 
@@ -135,7 +278,7 @@ def main():
     # pcb properties
     parser.add_argument('-m', '--mirror', help="Mirror the PCB (to get the bottom side up)", action='store_true')
     parser.add_argument('-p', '--pcb-thickness', help="Thickness of the PCB (mm)", type=float, default=1.6)
-    parser.add_argument('-s', '--shape', help="Index of the desired shape from KiCAD file", type=int, default=0)
+    parser.add_argument('-s', '--shape', help="Index of the desired shape from input file", type=int, default=0)
 
     # 3D model specifics
     parser.add_argument('-f', '--frame', help="Generate stencil holding frame instead of stencil frame", action='store_true')
@@ -144,7 +287,7 @@ def main():
     parser.add_argument('--stencil-offset', help="Offset between the stencil and frame edge (mm). If not specified, the --offset is used", type=float, default=None)
 
     parser.add_argument('--openscad', help="Path to OpenSCAD executable", type=str, default="openscad")
-    parser.add_argument('infile', help="path to KiCad PCB file")
+    parser.add_argument('infile', help="path to KiCad PCB or gerber file (.kicad_pcb, .gbr, .gm1)")
     parser.add_argument('outfile', help="path to output file (extension can be %s)"%(", ".join(extensions),))
 
     args = parser.parse_args()
@@ -162,17 +305,25 @@ def main():
     if args.stencil_offset is None:
         args.stencil_offset = args.offset
 
+    if args.infile.lower().endswith('.kicad_pcb'):
+        informat = InFormat.KICAD
+    elif args.infile.lower()[-4:] in ('.gbr', '.gm1'):
+        informat = InFormat.GERBER
+    else:
+        print("invalid input file format")
+        return 1
+
     try:
-        # kicad file
-        # NOTE: cutouts not supported yet
         with open(args.infile, "r") as fin:
             for line in fin:
-                if "(layer Edge.Cuts)" in line:
-                    outline_raw.append(line.strip())
+                outline_raw.append(line.strip())
     except IOError:
         print("input file not found")
 
-    shapes = sort_paths(process_kicad_layer(outline_raw))
+    if informat==InFormat.KICAD:
+        shapes = sort_paths(process_kicad_layer(outline_raw))
+    elif informat==InFormat.GERBER:
+        shapes = sort_paths(process_gerber_layer(outline_raw))
 
     if len(shapes)>0:
         print("Found {} closed shapes inside the file".format(len(shapes)))
@@ -181,7 +332,7 @@ def main():
         return 1
 
 
-    # TODO: find the outer shape, for now just take the first one
+    # TODO: find the outer shape (the one with greatest surface, for now just take the first one
     paths = shapes[args.shape]
 
     # prepare list of points for OpenSCAD polygon (i.e. expand arcs)
@@ -207,7 +358,10 @@ def main():
 
     # since the KiCAD and OpenSCAD use different y-axis direction, the polygon is mirrored
     # by default
-    if not args.mirror:
+    if informat==InFormat.KICAD:
+        pol = [(p[0], -p[1]) for p in pol]
+
+    if args.mirror:
         # mirror around y axis
         pol = [(-p[0], p[1]) for p in pol]
 
