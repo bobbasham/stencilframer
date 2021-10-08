@@ -24,6 +24,7 @@
 
 import argparse
 import enum
+import logging
 import math
 import os
 import re
@@ -38,6 +39,10 @@ class Interpolation(enum.Enum):
     LINEAR = 0
     ARC_CW = 1
     ARC_CCW = 2
+
+class CoordFormat(enum.Enum):
+    ABSOLUTE = 0
+    INCREMENTAL = 1
 
 
 def rotate_point(point, center, angle_deg):
@@ -57,6 +62,11 @@ def rotate_point(point, center, angle_deg):
 def distance(p1, p2):
     # euclidean distance
     return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
+
+
+def get_angle(s, e, c):
+    arg = distance(s, e)/2 / distance(s, c)
+    return math.asin(arg) * 2 / math.pi * 180
 
 
 def parse_kicad_element(el):
@@ -99,9 +109,9 @@ def process_kicad_layer(outline, arc_subdivision=1):
             # do the rotation
             p['center'] = p['start']
             p['start'] = rotate_point(point=p['end'], center=p['start'], angle_deg=-p['angle']) # angle has wrong orientation
-            print("interpolating arc from %s to %s"%(p['start'], p['end']))
+            logging.debug("interpolating arc from %s to %s", p['start'], p['end'])
         else:
-            print("interpolating line from %s to %s"%(p['start'], p['end']))
+            logging.debug("interpolating line from %s to %s", p['start'], p['end'])
 
         paths.append(p)
 
@@ -116,14 +126,16 @@ def process_gerber_layer(outline, arc_subdivision=1):
     total_coord = 6
     interpolation = Interpolation.LINEAR
     point = (0,0)
+    coord_format = CoordFormat.ABSOLUTE
 
     paths = []
 
     # convert raw coordinate to float in mm
     coord = lambda x: float(x)/(10**decimals)/unit_convert
-    get_angle = lambda s, e, c: math.asin(  distance(s, e)/2 / distance(s, c)  ) * 2 / math.pi * 180
 
-    for ln in outline:
+    lineno = 0
+    ln = outline[lineno]
+    while lineno<len(outline):
         if ln.startswith('%FSLA'):
             # parse decimal format
             try:
@@ -134,76 +146,138 @@ def process_gerber_layer(outline, arc_subdivision=1):
                 raise ValueError("Invalid coordinate format specified")
             integers = int(fmts[0][0])
             decimals = int(fmts[0][1:])
-            print("coordinate format set to %d.%d"%(decimals, total_coord,))
+            logging.debug("coordinate format set to %d.%d", decimals, total_coord)
 
-        elif ln.startswith('%MOIN'):
+        elif ln.startswith('%MOIN') or ln.startswith('G70*'):
             # units in inches - convert to mm
             unit_convert = 25.4
-            print("units set to inches")
+            logging.debug("units set to inches")
 
-        elif ln.startswith('%MOMM'):
+        elif ln.startswith('%MOMM') or ln.startswith('G71*'):
             # units in inches - convert to mm
             unit_convert = 1
-            print("units set to mm")
+            logging.debug("units set to mm")
 
         elif ln.startswith('%ADD'):
             # apertures list
             # since we're only looking for outline we can assume 0.05mm
             # aperture size and skip this for now
+            pass
+
+        elif ln.startswith('G01'):
+            interpolation = Interpolation.LINEAR
+            logging.debug("interpolation set to %s", interpolation)
+            ln = ln[3:] # continue parsing the same line
             continue
 
-        elif ln.startswith('G01*'):
-            interpolation = Interpolation.LINEAR
-
-        elif ln.startswith('G02*'):
+        elif ln.startswith('G02'):
             interpolation = Interpolation.ARC_CW
+            logging.debug("interpolation set to %s", interpolation)
+            ln = ln[3:] # continue parsing the same line
+            continue
 
-        elif ln.startswith('G03*'):
+        elif ln.startswith('G03'):
             interpolation = Interpolation.ARC_CCW
+            logging.debug("interpolation set to %s", interpolation)
+            ln = ln[3:] # continue parsing the same line
+            continue
+
+        elif ln.startswith('G04'):
+            # just a comment, skip it
+            pass
+
+        elif ln.startswith('G75'):
+            # multi quadrant mode (legacy)
+            pass
+
+        elif ln.startswith('G90'):
+            # set the coordinates to absolute (legacy)
+            coord_format = CoordFormat.ABSOLUTE
+            logging.debug("coordinate format set to absolute")
+            ln = ln[3:] # continue parsing the same line
+            continue
+        elif ln.startswith('G91'):
+            # set the coordinates to absolute (legacy)
+            coord_format = CoordFormat.INCREMENTAL
+            logging.debug("coordinate format set to incremental")
+            ln = ln[3:] # continue parsing the same line
+            continue
 
         elif ln.startswith('D'):
-            # select apperture from the list
-            continue
+            logging.debug("selecting aperture %s (ignored)", ln)
+            # select apperture from the list - skip it (for now)
+            pass
 
-        elif ln.startswith('X'):
+        elif ln.startswith('X') or ln.startswith('Y'):
             # move or interpolate command
             x = None
             y = None
             i = None
             j = None
+            success = False
+
+            # FIXME: take into consideration absolute/incremental format
             try:
                 pts = re.findall(r'X([0-9\-]+)Y([0-9\-]+)I([0-9\-]+)J([0-9\-]+)', ln)[0]
+                x = coord(pts[0])
+                y = coord(pts[1])
                 i = coord(pts[2])
                 j = coord(pts[3])
+                success = True
             except IndexError:
+                pass
+
+            if not success:
                 try:
                     pts = re.findall(r'X([0-9\-]+)Y([0-9\-]+)', ln)[0]
+                    x = coord(pts[0])
+                    y = coord(pts[1])
+                    success = True
                 except IndexError:
-                    raise ValueError("Invalid move or interpolate command %s"%(ln,))
+                    pass
 
-            x = coord(pts[0])
-            y = coord(pts[1])
+            if not success:
+                try:
+                    pts = re.findall(r'X([0-9\-]+)', ln)[0]
+                    x = coord(pts)
+                    y = point[1]
+                    success = True
+                except IndexError:
+                    pass
+
+            if not success:
+                try:
+                    pts = re.findall(r'Y([0-9\-]+)', ln)[0]
+                    x = point[0]
+                    y = coord(pts)
+                    success = True
+                except IndexError:
+                    pass
+
+            if not success:
+                logging.warning("Failed to parse coordinates: %s", ln)
 
             center = None
             if i is not None:
                 center = (point[0]+i, point[1]+j)
 
-            if ln.endswith('D02*'):
+            if ln.endswith('D02*') or ln.endswith('D2*'):
                 # move command
                 point = (x, y)
+                logging.debug("moving to %s", point)
 
-            elif ln.endswith('D01*'):
+            elif ln.endswith('D01*') or ln.endswith('D1*'):
                 # interpolate command
                 pend = (x, y)
                 if interpolation==Interpolation.LINEAR:
-                    print("interpolating line from %s to %s"%(point, pend,))
+                    logging.debug("interpolating line from %s to %s", point, pend)
                     paths.append({
                         'type': 'line',
                         'start': point,
                         'end': pend
                         })
                 elif interpolation==Interpolation.ARC_CW:
-                    print("interpolating CW arc from %s to %s"%(point, pend,))
+                    logging.debug("interpolating CW arc from %s to %s with center at %s", point, pend, center)
                     paths.append({
                         'type': 'arc',
                         'start': pend,
@@ -212,7 +286,7 @@ def process_gerber_layer(outline, arc_subdivision=1):
                         'angle': get_angle(point, pend, center)
                         })
                 elif interpolation==Interpolation.ARC_CCW:
-                    print("interpolating CCW arc from %s to %s"%(point, pend,))
+                    logging.debug("interpolating CCW arc from %s to %s with center at %s", point, pend, center)
                     paths.append({
                         'type': 'arc',
                         'start': point,
@@ -223,11 +297,14 @@ def process_gerber_layer(outline, arc_subdivision=1):
                 point = pend
 
             else:
-                raise ValueError("currently only supported commands are move or interpolate")
+                logging.warning("only supported commands currently are move or interpolate. Continuing...")
 
         elif ln.startswith('M02*'):
             # end of file
             break
+
+        lineno += 1     # go to the next line
+        ln = outline[lineno]
 
     return paths
 
@@ -286,20 +363,29 @@ def main():
     parser.add_argument('-o', '--offset', help="Offset between the PCB/stencil and frame edge (mm)", type=float, default=0.1)
     parser.add_argument('--stencil-offset', help="Offset between the stencil and frame edge (mm). If not specified, the --offset is used", type=float, default=None)
 
+    parser.add_argument('-d', '--debug', help="Show debugging info", action='store_true')
+
     parser.add_argument('--openscad', help="Path to OpenSCAD executable", type=str, default="openscad")
     parser.add_argument('infile', help="path to KiCad PCB or gerber file (.kicad_pcb, .gbr, .gm1)")
     parser.add_argument('outfile', help="path to output file (extension can be %s)"%(", ".join(extensions),))
 
     args = parser.parse_args()
 
+
+    logfmt = '[%(levelname)s] %(message)s'
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format=logfmt)
+    else:
+        logging.basicConfig(level=logging.INFO, format=logfmt)
+
     outline_raw = []
 
     if not any([args.outfile.endswith(ext) for ext in extensions]):
-        print("unsupported output file extension")
+        logging.warning("unsupported output file extension")
         return 1
 
     if os.system(args.openscad+" -v")!=0:
-        print("OpenSCAD executable not found on the system.")
+        logging.warning("OpenSCAD executable not found on the system.")
         return 1
 
     if args.stencil_offset is None:
@@ -310,7 +396,7 @@ def main():
     elif args.infile.lower()[-4:] in ('.gbr', '.gm1'):
         informat = InFormat.GERBER
     else:
-        print("invalid input file format")
+        logging.warning("invalid input file format")
         return 1
 
     try:
@@ -318,7 +404,8 @@ def main():
             for line in fin:
                 outline_raw.append(line.strip())
     except IOError:
-        print("input file not found")
+        logging.warning("input file not found")
+        return 1
 
     if informat==InFormat.KICAD:
         shapes = sort_paths(process_kicad_layer(outline_raw))
@@ -326,9 +413,9 @@ def main():
         shapes = sort_paths(process_gerber_layer(outline_raw))
 
     if len(shapes)>0:
-        print("Found {} closed shapes inside the file".format(len(shapes)))
+        logging.info("Found %d closed shapes inside the file", len(shapes))
     else:
-        print("No shapes found in the PCB file")
+        logging.warning("No shapes found in the PCB file")
         return 1
 
 
@@ -353,7 +440,7 @@ def main():
     pol = [(p[0]-pth_c[0], p[1]-pth_c[1],) for p in pol]
 
     if not pol:
-        print("no shape found on Edge.Cuts layer")
+        logging.warning("no shape found on Edge.Cuts layer")
         return 1
 
     # since the KiCAD and OpenSCAD use different y-axis direction, the polygon is mirrored
