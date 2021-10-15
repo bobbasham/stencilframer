@@ -29,6 +29,7 @@ import math
 import os
 import re
 import sys
+import tempfile
 
 
 class InFormat(enum.Enum):
@@ -364,6 +365,7 @@ def main():
     parser.add_argument('--stencil-offset', help="Offset between the stencil and frame edge (mm). If not specified, the --offset is used", type=float, default=None)
 
     parser.add_argument('-d', '--debug', help="Show debugging info", action='store_true')
+    parser.add_argument('-w', '--use-temp-file', help="Use temporary file when calling OpenSCAD (used by default on Windows)", action='store_true')
 
     parser.add_argument('--openscad', help="Path to OpenSCAD executable", type=str, default="openscad")
     parser.add_argument('infile', help="path to KiCad PCB or gerber file (.kicad_pcb, .gbr, .gm1)")
@@ -544,8 +546,19 @@ def main():
         with open(args.outfile, "w") as f:
             f.write(code)
     else:
-        cmd = "openscad /dev/null -D '{code}' -o {outfile}".format(code=code, outfile=args.outfile)
-        os.system(cmd)
+        if args.use_temp_file or os.name!='posix':
+            # Windows will report "command line too long" if all code is passed as a command line argument
+            # that's why we'll use temporary file
+            fd, name = tempfile.mkstemp()
+            os.write(fd, code.encode('utf-8'))
+            os.close(fd)
+            cmd = "openscad {infile} -o {outfile}".format(infile=name, outfile=args.outfile)
+            os.system(cmd)
+            os.unlink(name)
+
+        else:
+            cmd = "openscad /dev/null -D '{code}' -o {outfile}".format(code=code, outfile=args.outfile)
+            os.system(cmd)
 
     return 0
 
